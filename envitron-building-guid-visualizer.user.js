@@ -13,6 +13,15 @@
 (() => {
   'use strict';
 
+  const asciiArt = `
+  _    _       _            _        _                 
+ | |  | |     | |          / \\      | |                
+ | |__| |_   _| |_ ___    / _ \\     | | ___ _ __  ___  
+ |  __  | | | | __/ __|  / ___ \\ _  | |/ _ \\ '_ \\/ __| 
+ | |  | | |_| | |_\\__ \\ / /   \\ \\ || |  __/ | | \\__ \\ 
+ |_|  |_|\\__,_|\\__|___//_/     \\_\\__/ \\___|_| |_|___/ 
+  `;
+
   const logPrefix = '[GUID visualisatie]';
   const buildingsEndpointPath = '/web-api/buildings/';
   const buttonClass = 'tm-building-guid-button';
@@ -28,13 +37,13 @@
   let renderTimerId = 0;
   let originalFetchRef = null;
   let hasTriedManualApiLoad = false;
-  let lastDomIndexedCount = -1;
-  let lastRenderSummary = '';
 
-  const log = (...args) => console.log(logPrefix, ...args);
   const warn = (...args) => console.warn(logPrefix, ...args);
 
-  log('Userscript loaded');
+  console.log(
+    `%c${asciiArt}`,
+    'color: #2563eb; font-family: monospace; font-weight: bold; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);'
+  );
 
   const normalizeName = value =>
     String(value ?? '')
@@ -122,8 +131,6 @@
     normalizeUuid(building.uuid ?? building.id ?? building.guid ?? building.buildingUuid);
 
   const handleBuildingsPayload = (payload, source) => {
-    log(`Buildings payload received from ${source}`);
-
     const json = parsePayload(payload);
     const buildings = findBuildingArray(json);
 
@@ -147,19 +154,6 @@
         name,
         uuid
       });
-    }
-
-    log(`Building GUID array loaded from ${source}. Count: ${apiBuildingsByName.size}`);
-
-    console.table(
-      [...apiBuildingsByName.values()].slice(0, 25).map(building => ({
-        name: building.name,
-        uuid: building.uuid
-      }))
-    );
-
-    if (apiBuildingsByName.size > 25) {
-      log(`Console table shows first 25 of ${apiBuildingsByName.size} buildings.`);
     }
 
     scheduleRender('API building GUIDs loaded');
@@ -186,7 +180,6 @@
           return;
         }
 
-        log('Buildings endpoint intercepted via XMLHttpRequest:', this.__guidVisualisatieUrl);
         handleBuildingsPayload(this.response || this.responseText, 'XMLHttpRequest');
       });
 
@@ -196,8 +189,6 @@
     Object.defineProperty(xhrPrototype, '__guidVisualisatiePatched', {
       value: true
     });
-
-    log('XMLHttpRequest patched');
   };
 
   const patchFetch = () => {
@@ -215,8 +206,6 @@
         : args[0]?.url;
 
       if (isBuildingsEndpoint(requestUrl)) {
-        log('Buildings endpoint intercepted via fetch:', requestUrl);
-
         response
           .clone()
           .text()
@@ -230,8 +219,6 @@
     Object.defineProperty(window.fetch, '__guidVisualisatiePatched', {
       value: true
     });
-
-    log('fetch patched');
   };
 
   const tryLoadBuildingsFromApi = async () => {
@@ -249,8 +236,6 @@
     }
 
     try {
-      log('Trying manual building GUID API load:', buildingsEndpointPath);
-
       const response = await fetchFn(buildingsEndpointPath, {
         credentials: 'same-origin'
       });
@@ -344,7 +329,6 @@
 
   const syncDomBuildingLinksIntoMap = () => {
     const cards = document.querySelectorAll(cardSelector);
-    let indexedCount = 0;
 
     for (const card of cards) {
       const name = getCardName(card);
@@ -358,13 +342,6 @@
         name,
         uuid
       });
-
-      indexedCount++;
-    }
-
-    if (indexedCount !== lastDomIndexedCount) {
-      lastDomIndexedCount = indexedCount;
-      log(`DOM building links indexed. Count: ${indexedCount}`);
     }
   };
 
@@ -435,8 +412,6 @@
       try {
         await copyToClipboard(buildingUuid);
 
-        log(`Copied UUID for "${buildingName}": ${buildingUuid}`);
-
         button.textContent = 'Copied!';
 
         setTimeout(() => {
@@ -456,9 +431,7 @@
     const cards = document.querySelectorAll(cardSelector);
 
     let addedCount = 0;
-    let updatedCount = 0;
     let missingCount = 0;
-    let duplicateCount = 0;
 
     for (const card of cards) {
       const buildingName = getCardName(card);
@@ -467,7 +440,7 @@
         continue;
       }
 
-      const { uuid, source } = getUuidForCard(card);
+      const { uuid } = getUuidForCard(card);
 
       if (!uuid) {
         missingCount++;
@@ -492,13 +465,10 @@
       const existingButton = titleRow.querySelector(`.${buttonClass}`);
 
       if (existingButton) {
-        duplicateCount++;
-
         if (existingButton.dataset.buildingUuid !== uuid) {
           existingButton.textContent = uuid;
           existingButton.title = `Klik om GUID te kopiëren: ${uuid}`;
           existingButton.dataset.buildingUuid = uuid;
-          updatedCount++;
         }
 
         continue;
@@ -509,14 +479,6 @@
       titleRow.appendChild(button);
 
       addedCount++;
-      log(`Added UUID button for "${buildingName}" from ${source}: ${uuid}`);
-    }
-
-    const summary = `Reason: ${reason}. Cards: ${cards.length}, added: ${addedCount}, updated: ${updatedCount}, missing: ${missingCount}, duplicates skipped: ${duplicateCount}`;
-
-    if (summary !== lastRenderSummary) {
-      lastRenderSummary = summary;
-      log(`Render complete. ${summary}`);
     }
 
     if (missingCount > 0 && apiBuildingsByName.size === 0) {
@@ -554,8 +516,6 @@
       childList: true,
       subtree: true
     });
-
-    log('DOM observer started');
   };
 
   const initDomHooks = () => {
