@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Envitron gebouw GUID visualisatie
 // @namespace    https://hoppenbrouwers.nl/
-// @version      1.1.0
-// @description  Maakt het gebouw GUID zichtbaar in het Envitron portaal
+// @version      1.2.4
+// @description  Maakt het gebouw GUID zichtbaar in het Envitron portaal en voegt filters toe
 // @match        https://*.envitron.nl/*
 // @match        https://*.envitron.energy/*
 // @match        https://*.envitron.com/*
@@ -14,12 +14,12 @@
   'use strict';
 
   const asciiArt = `
-  _    _       _            _        _                 
- | |  | |     | |          / \\      | |                
- | |__| |_   _| |_ ___    / _ \\     | | ___ _ __  ___  
- |  __  | | | | __/ __|  / ___ \\ _  | |/ _ \\ '_ \\/ __| 
- | |  | | |_| | |_\\__ \\ / /   \\ \\ || |  __/ | | \\__ \\ 
- |_|  |_|\\__,_|\\__|___//_/     \\_\\__/ \\___|_| |_|___/ 
+  _    _       _            _        _
+ | |  | |     | |          / \\      | |
+ | |__| |_   _| |_ ___    / _ \\     | | ___ _ __  ___
+ |  __  | | | | __/ __|  / ___ \\ _  | |/ _ \\ '_ \\/ __|
+ | |  | | |_| | |_\\__ \\ / /   \\ \\ || |  __/ | | \\__ \\
+ |_|  |_|\\__,_|\\__|___//_/     \\_\\__/ \\___|_| |_|___/
   `;
 
   const logPrefix = '[GUID visualisatie]';
@@ -27,16 +27,17 @@
   const buttonClass = 'tm-building-guid-button';
   const cardSelector = '[data-testid="building-card-select"], [data-testid="building-card-open"]';
   const buildingUuidRegex = /\/buildings\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[/?#]|$)/i;
+  const filterControlId = 'tm-building-filter-control';
 
   const apiBuildingsByName = new Map();
   const domBuildingsByName = new Map();
-
   const loggedMissingNames = new Set();
 
   let observer;
   let renderTimerId = 0;
   let originalFetchRef = null;
   let hasTriedManualApiLoad = false;
+  let currentFilter = 'all';
 
   const warn = (...args) => console.warn(logPrefix, ...args);
 
@@ -44,6 +45,90 @@
     `%c${asciiArt}`,
     'color: #2563eb; font-family: monospace; font-weight: bold; text-shadow: 1px 1px 2px rgba(0,0,0,0.1);'
   );
+
+  const injectFilterStyles = () => {
+    if (document.getElementById('tm-filter-styles')) {
+      return;
+    }
+
+    const style = document.createElement('style');
+    style.id = 'tm-filter-styles';
+
+    style.textContent = `
+      .tm-filter-wrapper {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        background: #f3f4f6;
+        padding: 2px;
+        border-radius: 8px;
+        position: relative;
+        user-select: none;
+        width: fit-content;
+        min-width: 260px;
+        border: 1px solid #e5e7eb;
+      }
+
+      .tm-filter-bg {
+        position: absolute;
+        top: 2px;
+        bottom: 2px;
+        left: 0;
+        width: var(--tm-filter-bg-width, calc((100% - 4px) / 3));
+        background: white;
+        border-radius: 6px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        transform: translateX(var(--tm-filter-bg-x, 2px));
+        transition:
+          transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+          width 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+        z-index: 1;
+        pointer-events: none;
+      }
+
+      .tm-filter-button {
+        min-width: 0;
+        margin: 0;
+        padding: 6px 12px;
+        font-size: 11px;
+        font-weight: 700;
+        text-align: center;
+        cursor: pointer;
+        z-index: 2;
+        transition: color 0.2s;
+        color: #6b7280;
+        border: none;
+        background: transparent;
+        outline: none;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        white-space: nowrap;
+      }
+
+      .tm-filter-button.active {
+        color: #2563eb;
+      }
+
+      .tm-header-left-group {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+
+      @media (max-width: 767px) {
+        .tm-header-left-group {
+          width: 100%;
+        }
+
+        .tm-filter-wrapper {
+          width: 100%;
+          min-width: 0;
+        }
+      }
+    `;
+
+    document.head.appendChild(style);
+  };
 
   const normalizeName = value =>
     String(value ?? '')
@@ -152,7 +237,9 @@
 
       apiBuildingsByName.set(normalizeName(name), {
         name,
-        uuid
+        uuid,
+        hasUnsolved: !!building.has_unsolved_notifications,
+        unreadCount: parseInt(building.number_of_unread_messages || 0, 10)
       });
     }
 
@@ -169,12 +256,12 @@
     const originalOpen = xhrPrototype.open;
     const originalSend = xhrPrototype.send;
 
-    xhrPrototype.open = function(method, url, ...args) {
+    xhrPrototype.open = function (method, url, ...args) {
       this.__guidVisualisatieUrl = url;
       return originalOpen.call(this, method, url, ...args);
     };
 
-    xhrPrototype.send = function(body) {
+    xhrPrototype.send = function (body) {
       this.addEventListener('load', () => {
         if (!isBuildingsEndpoint(this.__guidVisualisatieUrl)) {
           return;
@@ -425,8 +512,168 @@
     return button;
   };
 
+  const updateFilterHighlight = wrapper => {
+    const activeButton = wrapper.querySelector('.tm-filter-button.active');
+
+    if (!activeButton) {
+      return;
+    }
+
+    wrapper.style.setProperty('--tm-filter-bg-x', `${activeButton.offsetLeft}px`);
+    wrapper.style.setProperty('--tm-filter-bg-width', `${activeButton.offsetWidth}px`);
+  };
+
+  const scheduleFilterHighlightUpdate = wrapper => {
+    window.requestAnimationFrame(() => {
+      updateFilterHighlight(wrapper);
+    });
+  };
+
+  const getCardSectionTitle = card => {
+    const section = card.closest('section');
+    const heading = section?.querySelector('h2');
+
+    return heading?.textContent?.trim().toUpperCase() ?? '';
+  };
+
+  const isFilterableBuildingCard = card => {
+    const sectionTitle = getCardSectionTitle(card);
+
+    return sectionTitle.includes('GEBOUWEN') && sectionTitle !== 'GESELECTEERD';
+  };
+
+  const applyFilters = () => {
+    const cards = document.querySelectorAll(cardSelector);
+
+    cards.forEach(card => {
+      if (!isFilterableBuildingCard(card)) {
+        card.style.display = '';
+        return;
+      }
+
+      const name = normalizeName(getCardName(card));
+      const building = apiBuildingsByName.get(name);
+
+      let visible = true;
+
+      if (currentFilter === 'notifications') {
+        visible = !!building?.hasUnsolved;
+      } else if (currentFilter === 'messages') {
+        visible = (building?.unreadCount || 0) > 0;
+      }
+
+      card.style.display = visible ? '' : 'none';
+    });
+  };
+
+  const updateExistingFilterControl = wrapper => {
+    wrapper.dataset.active = currentFilter;
+
+    wrapper
+      .querySelectorAll('.tm-filter-button')
+      .forEach(button => {
+        button.classList.toggle('active', button.dataset.filterId === currentFilter);
+      });
+
+    scheduleFilterHighlightUpdate(wrapper);
+  };
+
+  const injectFilterControl = () => {
+    const existingFilter = document.getElementById(filterControlId);
+
+    if (existingFilter) {
+      updateExistingFilterControl(existingFilter);
+      return;
+    }
+
+    const headers = Array.from(document.querySelectorAll('h2'))
+      .filter(header => {
+        const title = header.textContent.trim().toUpperCase();
+
+        return title.includes('GEBOUWEN') && title !== 'GESELECTEERD';
+      });
+
+    const h2 = headers[0];
+    const container = h2?.parentElement;
+
+    if (!container) {
+      return;
+    }
+
+    injectFilterStyles();
+
+    let leftGroup = container.querySelector('.tm-header-left-group');
+
+    if (!leftGroup) {
+      leftGroup = document.createElement('div');
+      leftGroup.className = 'tm-header-left-group';
+
+      h2.replaceWith(leftGroup);
+      leftGroup.appendChild(h2);
+    }
+
+    const wrapper = document.createElement('div');
+    wrapper.id = filterControlId;
+    wrapper.className = 'tm-filter-wrapper';
+    wrapper.dataset.active = currentFilter;
+
+    const bg = document.createElement('div');
+    bg.className = 'tm-filter-bg';
+    wrapper.appendChild(bg);
+
+    const options = [
+      { id: 'all', label: 'Alle' },
+      { id: 'notifications', label: 'Meldingen' },
+      { id: 'messages', label: 'Berichten' }
+    ];
+
+    options.forEach(option => {
+      const button = document.createElement('button');
+
+      button.type = 'button';
+      button.className = `tm-filter-button ${currentFilter === option.id ? 'active' : ''}`;
+      button.textContent = option.label;
+      button.dataset.filterId = option.id;
+
+      button.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        currentFilter = option.id;
+        wrapper.dataset.active = option.id;
+
+        wrapper
+          .querySelectorAll('.tm-filter-button')
+          .forEach(filterButton => filterButton.classList.remove('active'));
+
+        button.classList.add('active');
+
+        scheduleFilterHighlightUpdate(wrapper);
+        applyFilters();
+      };
+
+      wrapper.appendChild(button);
+    });
+
+    leftGroup.appendChild(wrapper);
+    scheduleFilterHighlightUpdate(wrapper);
+
+    if (window.ResizeObserver) {
+      const resizeObserver = new ResizeObserver(() => {
+        scheduleFilterHighlightUpdate(wrapper);
+      });
+
+      resizeObserver.observe(wrapper);
+    } else {
+      window.addEventListener('resize', () => {
+        scheduleFilterHighlightUpdate(wrapper);
+      });
+    }
+  };
+
   const renderGuidButtons = reason => {
     syncDomBuildingLinksIntoMap();
+    injectFilterControl();
 
     const cards = document.querySelectorAll(cardSelector);
 
@@ -479,6 +726,14 @@
       titleRow.appendChild(button);
 
       addedCount++;
+    }
+
+    applyFilters();
+
+    const filter = document.getElementById(filterControlId);
+
+    if (filter) {
+      scheduleFilterHighlightUpdate(filter);
     }
 
     if (missingCount > 0 && apiBuildingsByName.size === 0) {
